@@ -1,1 +1,867 @@
+import random, math, pygame
+import pgzrun
 
+TITLE = "Shadows of Elyndor"
+WIDTH, HEIGHT = 800, 600
+TILE_SIZE = 32
+MAP_W, MAP_H = 50, 40
+
+PLAYER_SPEED = 4
+SPLASH_TIME = 90  # frames
+FADE_TIME = 25
+
+# --- Assets ---
+music_tracks = {
+    "title": "music/title_theme.ogg",
+    "world": "music/overworld_theme.ogg",
+    "battle": "music/battle_theme.ogg",
+    "shop": "music/shop_theme.ogg"
+}
+sound_fx = {
+    "step": "step.wav", "attack": "attack.wav", "coin": "coin.wav",
+    "chest": "chest_open.wav", "click": "click.wav", "quest": "quest.wav"
+}
+image_fx = {
+    "logo": "game_logo.png", "player": "player.png", "npc": "npc.png",
+    "chest": "chest.png", "shadow": "shadow.png", "vignette": "vignette.png"
+}
+
+# --- Data ---
+RACES = ['Human', 'Elf', 'Dwarf', 'Orc']
+CLASSES = ['Warrior', 'Mage', 'Rogue', 'Cleric']
+STARTING_STATS = {
+    'Warrior': {'HP': 30, 'MP': 5, 'STR': 7, 'INT': 2, 'DEX': 4, 'WIS': 2},
+    'Mage': {'HP': 18, 'MP': 20, 'STR': 2, 'INT': 7, 'DEX': 4, 'WIS': 5},
+    'Rogue': {'HP': 24, 'MP': 8, 'STR': 5, 'INT': 4, 'DEX': 8, 'WIS': 3},
+    'Cleric': {'HP': 22, 'MP': 14, 'STR': 4, 'INT': 5, 'DEX': 3, 'WIS': 7},
+}
+WEAPONS = [
+    {'name': 'Rusty Sword', 'power': 2, 'class': 'Warrior'},
+    {'name': 'Old Staff', 'power': 2, 'class': 'Mage'},
+    {'name': 'Dagger', 'power': 2, 'class': 'Rogue'},
+    {'name': 'Mace', 'power': 2, 'class': 'Cleric'},
+]
+CONSUMABLES = [
+    {'name': 'Small Healing Potion', 'heal': 10, 'cost': 12},
+    {'name': 'Mana Elixir', 'mp': 7, 'cost': 10}
+]
+ENEMIES = [
+    {'name': 'Goblin', 'HP': 12, 'STR': 4, 'DEX': 3, 'color': (60,180,60)},
+    {'name': 'Skeleton', 'HP': 15, 'STR': 5, 'DEX': 2, 'color': (200,200,200)},
+    {'name': 'Wolf', 'HP': 10, 'STR': 3, 'DEX': 5, 'color': (100,100,100)},
+    {'name': 'Bandit', 'HP': 18, 'STR': 6, 'DEX': 4, 'color': (180,130,80)},
+]
+BOSSES = [
+    {'name': 'Orc Warlord', 'HP': 35, 'STR': 10, 'DEX': 5, 'color': (80,180,60)},
+    {'name': 'Necromancer', 'HP': 28, 'STR': 4, 'DEX': 4, 'color': (128,0,128)},
+]
+QUESTS = [
+    {'name': 'Find the Lost Amulet', 'desc': 'Retrieve the amulet stolen by goblins.', 'completed': False, 'reward': 30},
+    {'name': 'Defeat the Orc Warlord', 'desc': 'Slay the Orc Warlord terrorizing the village.', 'completed': False, 'reward': 50}
+]
+LOCATIONS = [
+    (2, 2, 'Village'),
+    (10, 8, 'Forest'),
+    (20, 6, 'Ruins'),
+    (32, 18, 'Cavern'),
+    (44, 36, 'Tower'),
+]
+TILE_GRASS, TILE_WATER, TILE_WALL, TILE_VILLAGE, TILE_FOREST, TILE_RUINS, TILE_CAVERN, TILE_TOWER = range(8)
+tile_colors = {
+    TILE_GRASS: (60, 180, 60),
+    TILE_WATER: (40, 100, 200),
+    TILE_WALL: (100,100,100),
+    TILE_VILLAGE: (220, 210, 150),
+    TILE_FOREST: (30, 120, 40),
+    TILE_RUINS: (130, 110, 90),
+    TILE_CAVERN: (80, 80, 60),
+    TILE_TOWER: (140, 80, 180)
+}
+
+# --- State ---
+game_mode = 'splash'
+fade_alpha = 255
+splash_timer = SPLASH_TIME
+dialog_lines = []
+dialog_callback = None
+notification = None
+notification_timer = 0
+
+class Player:
+    def __init__(self, name, race, class_):
+        stats = STARTING_STATS[class_]
+        self.name = name
+        self.race = race
+        self.class_ = class_
+        self.x = 2 * TILE_SIZE + TILE_SIZE//2
+        self.y = 2 * TILE_SIZE + TILE_SIZE//2
+        self.dx = self.dy = 0
+        self.anim_frame = 0
+        self.max_hp = stats['HP']
+        self.hp = stats['HP']
+        self.max_mp = stats['MP']
+        self.mp = stats['MP']
+        self.str = stats['STR']
+        self.int = stats['INT']
+        self.dex = stats['DEX']
+        self.wis = stats['WIS']
+        self.level = 1
+        self.exp = 0
+        self.gold = 30
+        self.quests = []
+        self.story_flags = {}
+        self.weapon = {'name': 'Fists', 'power': 1}
+        self.inventory = [
+            {'name': 'Small Healing Potion', 'heal': 10},
+            {'name': 'Mana Elixir', 'mp': 7}
+        ]
+        self.alive = True
+
+    def rect(self):
+        return Rect(self.x-12, self.y-12, 24, 24)
+    def pos_tile(self):
+        return (self.x // TILE_SIZE, self.y // TILE_SIZE)
+player = None
+cam_x, cam_y = 0, 0
+game_time = 360
+is_night = False
+
+def make_world():
+    m = [[TILE_GRASS for x in range(MAP_W)] for y in range(MAP_H)]
+    for _ in range(18):
+        x0, y0 = random.randint(0, MAP_W-1), random.randint(0, MAP_H-1)
+        for dx in range(-2,3):
+            for dy in range(-2,3):
+                if 0 <= x0+dx < MAP_W and 0 <= y0+dy < MAP_H and random.random()<0.5:
+                    m[y0+dy][x0+dx] = TILE_WATER
+    for y in range(MAP_H):
+        for x in range(MAP_W):
+            if x in [0, MAP_W-1] or y in [0, MAP_H-1]:
+                m[y][x] = TILE_WALL
+    for ix,iy,name in LOCATIONS:
+        if 'Village' in name:
+            m[iy][ix] = TILE_VILLAGE
+        elif 'Forest' in name:
+            m[iy][ix] = TILE_FOREST
+        elif 'Ruins' in name:
+            m[iy][ix] = TILE_RUINS
+        elif 'Cavern' in name:
+            m[iy][ix] = TILE_CAVERN
+        elif 'Tower' in name:
+            m[iy][ix] = TILE_TOWER
+    return m
+world_map = make_world()
+
+spawns = [
+    {'name':'Goblin', 'x': 10, 'y':8, 'data':ENEMIES[0]},
+    {'name':'Skeleton', 'x': 20, 'y':6, 'data':ENEMIES[1]},
+    {'name':'Orc Warlord', 'x':32, 'y':18, 'data':BOSSES[0], 'boss':True},
+    {'name':'Necromancer', 'x':44, 'y':36, 'data':BOSSES[1], 'boss':True},
+    {'name':'Bandit', 'x': 15, 'y': 13, 'data':ENEMIES[3]}
+]
+map_items = [
+    {'name': 'Amulet', 'x': 10, 'y': 8}
+]
+chests = [
+    {'x':7,'y':12,'opened':False,'content':[{'name':'Small Healing Potion','heal':10}], 'desc':'A dusty old chest.'},
+    {'x':22,'y':6,'opened':False,'content':[{'name':'Mana Elixir','mp':7}], 'desc':'A secret chest!'},
+    {'x':33,'y':19,'opened':False,'content':[{'name':'Gold Coin','gold':25}], 'desc':'A heavy iron chest.'}
+]
+
+npcs = [
+    {'name':'Elder','x':2,'y':2,'dialog':[
+        "Welcome, traveler! The goblins stole our sacred amulet!",
+        "Can you help us retrieve it from the forest to the east?"
+    ], 'quest_given':False, 'type':'villager', 'anim':0, 'frame':0},
+    {'name':'Shopkeeper','x':3,'y':2,'dialog':["Looking to buy or sell? Press [Space] to open my shop."], 'type':'shop', 'anim':0, 'frame':0}
+]
+
+shop_items = [
+    {'name': 'Small Healing Potion', 'heal': 10, 'cost': 12},
+    {'name': 'Mana Elixir', 'mp': 7, 'cost': 10},
+    {'name': 'Iron Sword', 'power': 3, 'cost': 20, 'class':'Warrior'},
+    {'name': 'Oak Staff', 'power': 3, 'cost': 20, 'class':'Mage'},
+    {'name': 'Steel Dagger', 'power': 3, 'cost': 18, 'class':'Rogue'},
+    {'name': 'Priest Mace', 'power': 3, 'cost': 19, 'class':'Cleric'},
+]
+shop_selected = 0
+inv_selected = 0
+quest_selected = 0
+menu_idx = 0
+menu_options = []
+held_keys = set()
+tick_count = 0
+
+# --- Utility ---
+def clamp(val, a, b): return max(a, min(b, val))
+
+def start_music(track):
+    try:
+        music.fadeout(1)
+    except Exception: pass
+    try:
+        music.play(track)
+        music.set_volume(0.6)
+    except Exception: pass
+
+def play_fx(name):
+    try:
+        sounds[name].play()
+    except Exception: pass
+
+def set_notification(msg, timer=90):
+    global notification, notification_timer
+    notification = msg
+    notification_timer = timer
+
+def start_game():
+    global player, game_mode, fade_alpha, notification
+    player = Player("Arin", "Human", "Warrior")
+    fade_alpha = 255
+    notification = None
+    game_mode = 'fadein'
+    start_music(music_tracks['world'])
+
+def open_dialog(lines, callback=None):
+    global dialog_lines, dialog_callback, game_mode
+    dialog_lines = lines if isinstance(lines, list) else [lines]
+    dialog_callback = callback
+    game_mode = 'dialog'
+    play_fx("click")
+
+def close_dialog():
+    global dialog_lines, dialog_callback, game_mode
+    dialog_lines = []
+    if dialog_callback: dialog_callback()
+    dialog_callback = None
+    game_mode = 'world'
+
+def open_inventory():
+    global game_mode, inv_selected
+    inv_selected = 0
+    game_mode = 'inventory'
+    play_fx("click")
+
+def open_quests():
+    global game_mode, quest_selected
+    quest_selected = 0
+    game_mode = 'quest'
+    play_fx("click")
+
+def open_shop():
+    global game_mode, shop_selected
+    shop_selected = 0
+    game_mode = 'shop'
+    start_music(music_tracks['shop'])
+    play_fx("click")
+
+def open_menu(options):
+    global game_mode, menu_options, menu_idx
+    menu_options = options
+    menu_idx = 0
+    game_mode = 'menu'
+    play_fx("click")
+
+def player_tile_blocked(x, y):
+    tx, ty = x // TILE_SIZE, y // TILE_SIZE
+    if not (0 <= tx < MAP_W and 0 <= ty < MAP_H): return True
+    t = world_map[ty][tx]
+    return t in (TILE_WALL, TILE_WATER)
+
+def move_player(dx, dy):
+    px, py = player.x, player.y
+    nx = px + dx*PLAYER_SPEED
+    ny = py + dy*PLAYER_SPEED
+    moved = False
+    if not player_tile_blocked(nx, py):
+        player.x = nx
+        moved = True
+    if not player_tile_blocked(player.x, ny):
+        player.y = ny
+        moved = True
+    if moved:
+        play_fx("step")
+    player.dx, player.dy = dx, dy
+
+def camera_follow():
+    global cam_x, cam_y
+    cam_x = clamp(int(player.x) - WIDTH//2, 0, MAP_W*TILE_SIZE - WIDTH)
+    cam_y = clamp(int(player.y) - HEIGHT//2, 0, MAP_H*TILE_SIZE - HEIGHT)
+
+def get_tile_name(x, y):
+    tid = world_map[y][x]
+    names = {
+        TILE_GRASS:'Grass', TILE_WATER:'Water', TILE_WALL:'Wall', TILE_VILLAGE:'Village',
+        TILE_FOREST:'Forest', TILE_RUINS:'Ruins', TILE_CAVERN:'Cavern', TILE_TOWER:'Tower'
+    }
+    return names.get(tid, 'Unknown')
+
+def start_battle(enemy, boss=False):
+    global battle_enemy, battle_boss, battle_msg, game_mode, fade_alpha
+    battle_enemy = dict(enemy)
+    battle_enemy['cur_hp'] = battle_enemy['HP']
+    battle_boss = boss
+    battle_msg = f"You are attacked by {battle_enemy['name']}!"
+    fade_alpha = 0
+    game_mode = 'battlefade'
+    start_music(music_tracks['battle'])
+    play_fx("attack")
+
+def end_battle(victory):
+    global battle_enemy, battle_boss, battle_msg, game_mode, notification
+    if victory:
+        expg = 10 if not battle_boss else 30
+        goldg = 10 if not battle_boss else 40
+        player.exp += expg
+        player.gold += goldg
+        set_notification(f"Defeated {battle_enemy['name']}! +{expg}xp +{goldg}g", timer=90)
+        play_fx("coin")
+    else:
+        open_dialog("You were defeated...", lambda: set_gameover())
+        play_fx("attack")
+    battle_enemy = None
+    battle_boss = False
+    fade_alpha = 255
+    game_mode = 'fadeout'
+    start_music(music_tracks['world'])
+
+def set_gameover():
+    global game_mode
+    game_mode = 'gameover'
+
+def player_use_item(idx):
+    if idx<0 or idx>=len(player.inventory): return
+    item = player.inventory[idx]
+    if 'heal' in item:
+        amt = min(player.max_hp - player.hp, item['heal'])
+        player.hp += amt
+        set_notification(f"Healed {amt} HP!", timer=60)
+        play_fx("coin")
+    elif 'mp' in item:
+        amt = min(player.max_mp - player.mp, item['mp'])
+        player.mp += amt
+        set_notification(f"Restored {amt} MP!", timer=60)
+    del player.inventory[idx]
+
+def player_attack():
+    global battle_enemy, battle_msg
+    dmg = player.str + player.weapon.get('power',1) + random.randint(1,4)
+    battle_enemy['cur_hp'] -= dmg
+    battle_msg = f"You attack for {dmg} damage!"
+    play_fx("attack")
+    if battle_enemy['cur_hp'] <= 0:
+        end_battle(True)
+        return
+    enemy_attack()
+
+def player_cast_spell():
+    global battle_enemy, battle_msg
+    if player.mp < 4:
+        battle_msg = "Not enough MP!"
+        return
+    if player.class_ == 'Mage':
+        dmg = player.int + random.randint(2,6)
+        player.mp -= 4
+        battle_enemy['cur_hp'] -= dmg
+        battle_msg = f"You cast Firebolt for {dmg} damage!"
+    elif player.class_ == 'Cleric':
+        heal = player.wis + random.randint(1,6)
+        player.mp -= 4
+        player.hp = min(player.max_hp, player.hp + heal)
+        battle_msg = f"You cast Heal for {heal} HP!"
+    else:
+        battle_msg = "You can't cast spells!"
+        return
+    play_fx("attack")
+    if battle_enemy['cur_hp'] <= 0:
+        end_battle(True)
+        return
+    enemy_attack()
+
+def enemy_attack():
+    global battle_enemy, battle_msg
+    edmg = battle_enemy['STR'] + random.randint(1,4)
+    player.hp -= edmg
+    battle_msg += f"\n{battle_enemy['name']} attacks for {edmg}!"
+    play_fx("attack")
+    if player.hp <= 0:
+        end_battle(False)
+
+def try_pickup_item():
+    px, py = player.pos_tile()
+    for idx, item in enumerate(map_items):
+        if item['x'] == px and item['y'] == py:
+            player.inventory.append({'name': item['name']})
+            set_notification(f"Picked up {item['name']}!", timer=50)
+            play_fx("coin")
+            del map_items[idx]
+            return True
+    return False
+
+def try_pickup_chest():
+    px, py = player.pos_tile()
+    for chest in chests:
+        if chest['x']==px and chest['y']==py and not chest['opened']:
+            chest['opened'] = True
+            for loot in chest['content']:
+                if 'gold' in loot: player.gold += loot['gold']
+                else: player.inventory.append(loot)
+            set_notification("Chest opened!", timer=60)
+            play_fx("chest")
+            return True
+    return False
+
+def try_start_battle():
+    px, py = player.pos_tile()
+    for idx, spawn in enumerate(spawns):
+        if spawn['x'] == px and spawn['y'] == py:
+            enemy = dict(spawn['data'])
+            if is_night:
+                enemy['STR'] += 2
+                enemy['HP'] += 4
+            start_battle(enemy, spawn.get('boss', False))
+            return True
+    return False
+
+def try_landmark_event():
+    px, py = player.pos_tile()
+    for x, y, name in LOCATIONS:
+        if x == px and y == py:
+            if name=='Village':
+                set_notification("Rested at Elmwood Village!", timer=80)
+                player.hp = player.max_hp
+                player.mp = player.max_mp
+                play_fx("coin")
+            elif name=='Forest':
+                set_notification("Entered the Shadow Forest.", timer=60)
+            elif name=='Ruins':
+                set_notification("Exploring Twilight Ruins.", timer=60)
+            elif name=='Cavern':
+                set_notification("In the Cavern of Echoes.", timer=60)
+            elif name=='Tower':
+                set_notification("At the Tower of the Necromancer.", timer=60)
+            break
+
+def try_npc_interact():
+    px, py = player.pos_tile()
+    for npc in npcs:
+        if npc['x'] == px and npc['y'] == py:
+            if npc['type']=='shop':
+                open_shop()
+            else:
+                open_dialog(npc['dialog'])
+            npc['quest_given'] = True
+            play_fx("click")
+            return True
+    return False
+
+last_event_tick = 0
+def maybe_random_event():
+    global last_event_tick
+    if random.random()<0.002 and pygame.time.get_ticks()-last_event_tick>15000:
+        last_event_tick = pygame.time.get_ticks()
+        events = [
+            "You spot a rare bird flying overhead.",
+            "A sudden gust of wind rustles the leaves.",
+            "You find a shiny pebble. It's pretty!",
+            "You hear a distant howl..."
+        ]
+        set_notification(random.choice(events), timer=70)
+        play_fx("click")
+
+def update():
+    global tick_count, game_time, is_night, fade_alpha, splash_timer
+    tick_count+=1
+    if game_mode=='splash':
+        splash_timer -= 1
+        if splash_timer <= 0:
+            fade_alpha = 255
+            start_music(music_tracks['title'])
+            set_menu()
+    elif game_mode=='fadein':
+        fade_alpha = max(fade_alpha-12, 0)
+        if fade_alpha==0:
+            game_mode='world'
+    elif game_mode=='fadeout':
+        fade_alpha = min(fade_alpha+12, 255)
+        if fade_alpha>=255:
+            game_mode='world'
+    elif game_mode=='battlefade':
+        fade_alpha = min(fade_alpha+18, 255)
+        if fade_alpha>=255:
+            game_mode='battle'
+    elif game_mode=='world':
+        dx = dy = 0
+        if keyboard.left or keyboard.a: dx -= 1
+        if keyboard.right or keyboard.d: dx += 1
+        if keyboard.up or keyboard.w: dy -= 1
+        if keyboard.down or keyboard.s: dy += 1
+        move_player(dx, dy)
+        if dx or dy: camera_follow(); maybe_random_event()
+        # Animate player and npcs
+        if dx or dy: player.anim_frame=(player.anim_frame+1)%8
+        for npc in npcs:
+            if random.random()<0.05: npc['frame']=(npc['frame']+1)%4
+        if tick_count%8==0:
+            game_time = (game_time + 2) % 1440
+            is_night = not (360 <= game_time < 1080)
+        if try_pickup_item(): return
+        if try_pickup_chest(): return
+        if try_start_battle(): return
+        try_landmark_event()
+    # Notification fade
+    global notification_timer
+    if notification_timer>0:
+        notification_timer-=1
+        if notification_timer==0:
+            global notification
+            notification=None
+
+def draw():
+    screen.clear()
+    if game_mode in ('world','inventory','quest','shop','fadein','fadeout'):
+        draw_world()
+        draw_hud()
+        draw_minimap()
+        draw_notification()
+        if game_mode=='inventory': draw_inventory()
+        elif game_mode=='quest': draw_quests()
+        elif game_mode=='shop': draw_shop()
+        if game_mode in ('fadein','fadeout'):
+            draw_fade()
+    elif game_mode=='battle':
+        draw_battle()
+    elif game_mode=='dialog':
+        draw_world(); draw_hud(); draw_minimap(); draw_dialog(); draw_notification()
+    elif game_mode=='menu':
+        draw_menu()
+    elif game_mode=='gameover':
+        draw_gameover()
+    elif game_mode=='splash':
+        draw_splash()
+
+def draw_splash():
+    screen.clear()
+    try: screen.blit(image_fx['logo'], (WIDTH//2-128, HEIGHT//2-128))
+    except: screen.draw.text("Shadows of Elyndor", (WIDTH//2-180, HEIGHT//2-40), color="gold", fontsize=60)
+    s = pygame.Surface((WIDTH, HEIGHT))
+    a = int(255 * (splash_timer/SPLASH_TIME))
+    s.set_alpha(a)
+    s.fill((0,0,0))
+    screen.surface.blit(s, (0,0))
+
+def draw_world():
+    start_x = cam_x // TILE_SIZE
+    start_y = cam_y // TILE_SIZE
+    tx0 = clamp(start_x, 0, MAP_W-1)
+    ty0 = clamp(start_y, 0, MAP_H-1)
+    tx1 = clamp((cam_x+WIDTH)//TILE_SIZE+1, 0, MAP_W)
+    ty1 = clamp((cam_y+HEIGHT)//TILE_SIZE+1, 0, MAP_H)
+    for ty in range(ty0, ty1):
+        for tx in range(tx0, tx1):
+            t = world_map[ty][tx]
+            color = tile_colors.get(t, (128,128,128))
+            sx = tx*TILE_SIZE - cam_x
+            sy = ty*TILE_SIZE - cam_y
+            screen.draw.filled_rect(Rect(sx, sy, TILE_SIZE, TILE_SIZE), color)
+            for lx,ly,name in LOCATIONS:
+                if tx==lx and ty==ly:
+                    screen.draw.textbox(name, Rect(sx, sy+TILE_SIZE//2, TILE_SIZE, TILE_SIZE//2), color="black", fontsize=12)
+    for item in map_items:
+        sx = item['x']*TILE_SIZE - cam_x + TILE_SIZE//4
+        sy = item['y']*TILE_SIZE - cam_y + TILE_SIZE//4
+        try: screen.blit(image_fx['chest'], (sx,sy))
+        except: screen.draw.filled_circle((sx+TILE_SIZE//4, sy+TILE_SIZE//4), 7, (255,220,0))
+        screen.draw.text(item['name'], (sx+10, sy+2), color="black", fontsize=14)
+    # Chests
+    for chest in chests:
+        if chest['opened']: continue
+        sx = chest['x']*TILE_SIZE - cam_x + TILE_SIZE//6
+        sy = chest['y']*TILE_SIZE - cam_y + TILE_SIZE//6
+        try: screen.blit(image_fx['chest'], (sx,sy))
+        except: screen.draw.filled_rect(Rect(sx,sy,18,14),(180,120,40))
+        screen.draw.text("C", (sx+3, sy-1), color="black", fontsize=14)
+    # Monsters
+    for spawn in spawns:
+        sx = spawn['x']*TILE_SIZE - cam_x + TILE_SIZE//4
+        sy = spawn['y']*TILE_SIZE - cam_y + TILE_SIZE//4
+        col = spawn['data'].get('color', (180,0,0))
+        screen.draw.filled_rect(Rect(sx, sy, 16,16), col)
+        screen.draw.text(spawn['name'][0], (sx+3, sy+1), color="black", fontsize=14)
+    # NPCs
+    for npc in npcs:
+        sx = npc['x']*TILE_SIZE - cam_x + TILE_SIZE//3
+        sy = npc['y']*TILE_SIZE - cam_y + TILE_SIZE//3
+        try:
+            screen.blit(image_fx['npc'], (sx,sy))
+        except:
+            col = (255,230,180) if npc['type']=='villager' else (180,180,255)
+            screen.draw.filled_circle((sx+7,sy+7), 8, col)
+            screen.draw.text(npc['name'][0], (sx+3,sy+1), color="black", fontsize=14)
+    # Player shadow
+    px = int(player.x - cam_x)
+    py = int(player.y - cam_y)
+    try: screen.blit(image_fx['shadow'], (px-12, py+6))
+    except: screen.draw.filled_circle((px, py+10), 13, (0,0,0,60))
+    # Player
+    try: screen.blit(image_fx['player'], (px-12, py-12))
+    except:
+        screen.draw.filled_circle((px, py), 12, (240,200,80))
+        screen.draw.text(player.name[0], (px-5, py-6), color="black", fontsize=18)
+    # Vignette
+    try: screen.blit(image_fx['vignette'], (0,0))
+    except: pass
+    # Night tint
+    if is_night:
+        s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        s.fill((15,15,60, 120))
+        screen.surface.blit(s, (0,0))
+
+def draw_notification():
+    if notification:
+        y = HEIGHT-70
+        s = pygame.Surface((WIDTH,40),pygame.SRCALPHA)
+        s.fill((60,60,120,140))
+        screen.surface.blit(s,(0,y))
+        screen.draw.text(notification, (WIDTH//2-120, y+7), color="white", fontsize=28, shadow=(1,1))
+
+def draw_hud():
+    s = f"{player.name} the {player.race} {player.class_}  "
+    screen.draw.text(s, (8, 8), color="white", fontsize=22, shadow=(1,1), fontname="freesansbold")
+    # HP/MP bars
+    draw_bar(8,40,180,20,player.hp,player.max_hp,(90,220,80),"HP")
+    draw_bar(8,64,180,20,player.mp,player.max_mp,(100,180,220),"MP")
+    hr = (game_time // 60) % 24
+    min = game_time % 60
+    txt = f"{hr:02d}:{min:02d} {'Night' if is_night else 'Day'}"
+    screen.draw.text(txt, (8, 90), color="lightblue", fontsize=18)
+    if game_mode=='world':
+        c = "[E] Talk  [I]nventory [Q]uests [ESC]Menu"
+        screen.draw.text(c, (8, HEIGHT-26), color="yellow", fontsize=18, shadow=(1,1))
+
+def draw_bar(x,y,w,h,val,maxval,color,label):
+    frac = float(val)/maxval
+    screen.draw.filled_rect(Rect(x,y,w,h),(40,40,40))
+    screen.draw.filled_rect(Rect(x,y,int(w*frac),h),color)
+    screen.draw.rect(Rect(x,y,w,h),(200,200,200))
+    screen.draw.text(f"{label}: {val}/{maxval}", (x+6,y+1), color="white", fontsize=14)
+
+def draw_minimap():
+    mm_w, mm_h = 120, 96
+    scale_x, scale_y = mm_w/MAP_W, mm_h/MAP_H
+    mx, my = WIDTH-mm_w-16, 16
+    screen.draw.filled_rect(Rect(mx, my, mm_w, mm_h), (20,20,40,180))
+    for x,y,name in LOCATIONS:
+        color = (255,255,120) if 'Village' in name else (180,100,80) if 'Ruins' in name else (60,180,60)
+        screen.draw.filled_rect(Rect(mx+x*scale_x, my+y*scale_y, max(2,scale_x), max(2,scale_y)), color)
+        icon = "V" if 'Village' in name else "T" if 'Tower' in name else "R"
+        screen.draw.text(icon,(mx+x*scale_x,my+y*scale_y-6),color="black",fontsize=12)
+    px, py = player.pos_tile()
+    screen.draw.filled_circle((mx+px*scale_x, my+py*scale_y), 4, (240,200,80))
+    screen.draw.text("Map", (mx+38, my-14), color="white", fontsize=16)
+
+def draw_dialog():
+    h = 140
+    rect = Rect(32, HEIGHT-h-20, WIDTH-64, h)
+    screen.draw.filled_rect(rect, (0,0,0,230))
+    screen.draw.rect(rect, (180,180,255))
+    y = rect.y + 18
+    for line in dialog_lines:
+        screen.draw.text(line, (rect.x+16, y), color="white", fontsize=22, shadow=(1,1))
+        y += 32
+    screen.draw.text("[Enter]", (rect.x+rect.w-80, rect.y+rect.h-30), color="yellow", fontsize=18)
+
+def draw_inventory():
+    h = 300
+    rect = Rect(80, HEIGHT//2-h//2, WIDTH-160, h)
+    screen.draw.filled_rect(rect, (5,10,25,230))
+    screen.draw.rect(rect, (200,200,80))
+    screen.draw.text("Inventory", (rect.x+10, rect.y+6), color="white", fontsize=22)
+    y = rect.y + 40
+    for idx, item in enumerate(player.inventory):
+        sel = ">> " if idx==inv_selected else "   "
+        txt = sel+item['name']
+        if 'power' in item:
+            txt += f" (Atk+{item['power']})"
+        elif 'heal' in item:
+            txt += f" (Heals {item['heal']})"
+        elif 'mp' in item:
+            txt += f" (MP+{item['mp']})"
+        screen.draw.text(txt, (rect.x+20, y), color="yellow" if idx==inv_selected else "white", fontsize=20)
+        # Tooltip
+        if idx==inv_selected:
+            tip = f"{item['name']}: "
+            if 'heal' in item: tip += "Restores HP."
+            if 'mp' in item: tip += "Restores MP."
+            if 'power' in item: tip += "Weapon, increases attack."
+            screen.draw.textbox(tip, Rect(rect.x+220,y-8,180,30), color="white", fontsize=14)
+        y += 28
+    if player.inventory:
+        screen.draw.text("[Enter] Use  [D] Drop  [Esc] Close", (rect.x+10, rect.y+rect.h-30), color="white", fontsize=18)
+    else:
+        screen.draw.text("Inventory is empty. [Esc] Close", (rect.x+10, rect.y+rect.h-30), color="white", fontsize=18)
+
+def draw_quests():
+    h = 220
+    rect = Rect(90, HEIGHT//2-h//2, WIDTH-180, h)
+    screen.draw.filled_rect(rect, (30,10,40,220))
+    screen.draw.rect(rect, (110,200,160))
+    screen.draw.text("Quests", (rect.x+10, rect.y+6), color="white", fontsize=22)
+    y = rect.y + 40
+    for idx, q in enumerate(QUESTS):
+        sel = ">> " if idx==quest_selected else "   "
+        status = "[X]" if q['completed'] else "[ ]"
+        txt = f"{sel}{status} {q['name']}: {q['desc']}"
+        screen.draw.text(txt, (rect.x+20, y), color="yellow" if idx==quest_selected else "white", fontsize=18)
+        y += 32
+        if idx==quest_selected:
+            if q['completed']: screen.draw.textbox("You have completed this quest!",Rect(rect.x+220,y-28,220,30),color="gold",fontsize=16)
+    screen.draw.text("[Esc] Close", (rect.x+10, rect.y+rect.h-26), color="white", fontsize=16)
+
+def draw_battle():
+    rect = Rect(80, 40, WIDTH-160, HEIGHT-80)
+    screen.draw.filled_rect(rect, (30,10,10,220))
+    screen.draw.rect(rect, (200,40,40))
+    e = battle_enemy
+    ex, ey = rect.x+rect.w//2+110, rect.y+100
+    screen.draw.filled_rect(Rect(ex-30, ey-30, 60, 60), e.get('color',(200,0,0)))
+    screen.draw.text(e['name'], (ex-28, ey-45), color="white", fontsize=22)
+    draw_bar(ex-30, ey+35, 100, 10, e['cur_hp'], e['HP'], (180,40,40), "HP")
+    px, py = rect.x+rect.w//2-120, rect.y+130
+    screen.draw.filled_circle((px, py), 26, (220,200,80))
+    screen.draw.text(player.name, (px-28, py-42), color="white", fontsize=22)
+    draw_bar(px-30, py+30, 100, 10, player.hp, player.max_hp, (80,180,80), "HP")
+    draw_bar(px-30, py+44, 100, 10, player.mp, player.max_mp, (100,180,220), "MP")
+    y = rect.y + rect.h - 100
+    acts = ["[A]ttack", "[S]kill", "[I]tem", "[Esc]Run"]
+    for i, txt in enumerate(acts):
+        screen.draw.text(txt, (rect.x+44+i*120, y), color="yellow", fontsize=20)
+    screen.draw.textbox(battle_msg, Rect(rect.x+20, rect.y+rect.h-60, rect.w-40, 50), color="white", fontsize=18)
+
+def draw_shop():
+    h = 280
+    rect = Rect(110, HEIGHT//2-h//2, WIDTH-220, h)
+    screen.draw.filled_rect(rect, (90,60,30,220))
+    screen.draw.rect(rect, (220,220,90))
+    screen.draw.text("Shop", (rect.x+12, rect.y+10), color="white", fontsize=28)
+    y = rect.y+48
+    for idx, item in enumerate(shop_items):
+        sel = ">> " if idx==shop_selected else "   "
+        txt = f"{sel}{item['name']} - {item.get('cost',9)}g"
+        if 'power' in item:
+            txt += f" (Atk+{item['power']})"
+        elif 'heal' in item:
+            txt += f" (Heals {item['heal']})"
+        elif 'mp' in item:
+            txt += f" (MP+{item['mp']})"
+        screen.draw.text(txt, (rect.x+24, y), color="yellow" if idx==shop_selected else "white", fontsize=20)
+        # Tooltip
+        if idx==shop_selected:
+            tip = f"{item['name']}: "
+            if 'heal' in item: tip += "Restores HP."
+            if 'mp' in item: tip += "Restores MP."
+            if 'power' in item: tip += "Weapon, increases attack."
+            screen.draw.textbox(tip, Rect(rect.x+220,y-8,200,30), color="white", fontsize=14)
+        y += 32
+    screen.draw.text("[Enter] Buy  [Esc] Close", (rect.x+16, rect.y+rect.h-30), color="white", fontsize=18)
+
+def draw_menu():
+    rect = Rect(140, HEIGHT//2-100, WIDTH-280, 200)
+    screen.draw.filled_rect(rect, (5,30,70,220))
+    screen.draw.rect(rect, (220,220,80))
+    screen.draw.text("Menu", (rect.x+10, rect.y+12), color="white", fontsize=30)
+    y = rect.y + 50
+    for idx, opt in enumerate(menu_options):
+        sel = ">> " if idx==menu_idx else "   "
+        screen.draw.text(sel+opt, (rect.x+44, y), color="yellow" if idx==menu_idx else "white", fontsize=22)
+        y += 36
+
+def draw_gameover():
+    rect = Rect(0, HEIGHT//2-60, WIDTH, 120)
+    screen.draw.filled_rect(rect, (0,0,0,220))
+    screen.draw.text("GAME OVER", (WIDTH//2-110, HEIGHT//2-38), color="red", fontsize=44, fontname="freesansbold")
+    screen.draw.text("Press [Enter] to return to menu", (WIDTH//2-130, HEIGHT//2+10), color="white", fontsize=22)
+
+def draw_fade():
+    s = pygame.Surface((WIDTH, HEIGHT))
+    s.set_alpha(fade_alpha)
+    s.fill((0,0,0))
+    screen.surface.blit(s, (0,0))
+
+def on_key_down(key):
+    global inv_selected, quest_selected, menu_idx, shop_selected
+    if game_mode=='menu':
+        if key==keys.UP: menu_idx = clamp(menu_idx-1, 0, len(menu_options)-1)
+        elif key==keys.DOWN: menu_idx = clamp(menu_idx+1, 0, len(menu_options)-1)
+        elif key==keys.RETURN: handle_menu_select(menu_options[menu_idx])
+    elif game_mode=='shop':
+        if key==keys.UP: shop_selected = clamp(shop_selected-1, 0, len(shop_items)-1)
+        elif key==keys.DOWN: shop_selected = clamp(shop_selected+1, 0, len(shop_items)-1)
+        elif key==keys.RETURN:
+            buy_item = shop_items[shop_selected]
+            price = buy_item.get('cost',10)
+            if player.gold<price:
+                set_notification("Not enough gold!", timer=70)
+                play_fx("click")
+            else:
+                player.gold -= price
+                if 'power' in buy_item:
+                    player.weapon = {'name':buy_item['name'],'power':buy_item['power']}
+                    set_notification(f"Bought and equipped {buy_item['name']}!", timer=80)
+                else:
+                    player.inventory.append({k:v for k,v in buy_item.items() if k in ('name','heal','mp','power')})
+                    set_notification(f"Bought {buy_item['name']}!", timer=70)
+                play_fx("coin")
+        elif key==keys.ESCAPE: game_mode='world'; start_music(music_tracks['world'])
+    elif game_mode=='world':
+        if key==keys.I: open_inventory()
+        elif key==keys.Q: open_quests()
+        elif key==keys.ESCAPE: open_menu(["Resume","Save (N/A)","Quit"])
+        elif key==keys.E: try_npc_interact()
+        elif key==keys.SPACE:
+            px, py = player.pos_tile()
+            for npc in npcs:
+                if npc['x'] == px and npc['y'] == py and npc['type']=='shop':
+                    open_shop()
+    elif game_mode=='inventory':
+        if key==keys.UP: inv_selected = clamp(inv_selected-1, 0, len(player.inventory)-1)
+        elif key==keys.DOWN: inv_selected = clamp(inv_selected+1, 0, len(player.inventory)-1)
+        elif key==keys.RETURN and player.inventory: player_use_item(inv_selected)
+        elif key==keys.D and player.inventory:
+            del player.inventory[inv_selected]
+            inv_selected = clamp(inv_selected, 0, len(player.inventory)-1)
+        elif key==keys.ESCAPE: game_mode='world'
+    elif game_mode=='quest':
+        if key==keys.UP: quest_selected = clamp(quest_selected-1, 0, len(QUESTS)-1)
+        elif key==keys.DOWN: quest_selected = clamp(quest_selected+1, 0, len(QUESTS)-1)
+        elif key==keys.ESCAPE: game_mode='world'
+    elif game_mode=='battle':
+        if key==keys.A: player_attack()
+        elif key==keys.S: player_cast_spell()
+        elif key==keys.I and player.inventory: open_inventory()
+        elif key==keys.ESCAPE: end_battle(False)
+    elif game_mode=='dialog':
+        if key==keys.RETURN: close_dialog()
+    elif game_mode=='gameover':
+        if key==keys.RETURN:
+            set_menu()
+    elif game_mode=='splash':
+        if key==keys.RETURN:
+            set_menu()
+
+def handle_menu_select(option):
+    global game_mode
+    if option=="Resume":
+        game_mode='world'
+    elif option=="Quit":
+        quit()
+    else:
+        game_mode='world'
+
+def set_menu():
+    global game_mode, menu_options, menu_idx
+    game_mode = 'menu'
+    menu_options = ["Start Game", "Quit"]
+    menu_idx = 0
+
+main_menu = set_menu
